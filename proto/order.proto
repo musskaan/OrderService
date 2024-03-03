@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "orderService.com/go-orderService-grpc;go_orderService_grpc";
+
+service OrderService {
+	rpc Create (CreateOrderRequest) returns (CreateOrderResponse);
+}
+
+message CreateOrderResponse {
+  int64 id = 1;
+  string username = 2;
+  string restaurant_id = 3;
+  map<string, int32> menu_items = 4;
+  double total_price = 5;
+}
+
+message CreateOrderRequest {
+	string restaurant_id = 1;
+	map<string, int32> menu_items = 2;
+}

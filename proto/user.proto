@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package proto; 
+
+option go_package = "orderService.com/go-orderService-grpc;go_orderService_grpc";
+
+service UserService {
+	rpc Register (RegisterUserRequest) returns (RegisterUserResponse);
+}
+
+message Address {
+  string street = 2;
+  string city = 4;
+  string state = 5;
+  string zipcode = 6;
+}
+
+message RegisterUserRequest {
+	string username = 1;
+	string password = 2; 
+  Address address = 3;
+}
+
+message RegisterUserResponse {
+	  string username = 1;
+    Address address = 2;
+    string message = 3;
+}
