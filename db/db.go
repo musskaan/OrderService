@@ -11,47 +11,31 @@ import (
 )
 
 const (
-	host                 = "localhost"
-	port                 = 5433
-	username             = "postgres"
-	password             = "pgpswd"
-	orderServiceDbName   = "OrderServiceDB"
-	catalogServiceDbName = "RestaurantOrderingSystem"
-	sslMode              = "disable"
+	host     = "localhost"
+	port     = 5433
+	username = "postgres"
+	password = "pgpswd"
+	dbName   = "OrderServiceDB"
+	sslMode  = "disable"
 )
 
-type Databases struct {
-	OrderServiceDb   *gorm.DB
-	CatalogServiceDb *gorm.DB
-}
+func Connection() *gorm.DB {
+	connectionString := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", host, port, username, password, dbName, sslMode)
 
-func Connection() Databases {
-	orderServiceConnectionString := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", host, port, username, password, orderServiceDbName, sslMode)
-	catalogServiceConnectionString := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", host, port, username, password, catalogServiceDbName, sslMode)
-
-	orderServiceDb, err := gorm.Open(postgres.Open(orderServiceConnectionString), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("Error connecting to database: %v\n", err)
-	}
-
-	catalogServiceDb, err := gorm.Open(postgres.Open(catalogServiceConnectionString), &gorm.Config{})
-
+	db, err := gorm.Open(postgres.Open(connectionString), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Error connecting to database: %v\n", err)
 	}
 
 	log.Println("Connected to the database")
 
-	err = orderServiceDb.AutoMigrate(&model.User{}, &model.Order{})
+	err = db.AutoMigrate(&model.User{}, &model.Order{})
 
 	if err != nil {
 		log.Fatalf("Error migrating database: %v", err)
 	}
 
-	return Databases{
-		OrderServiceDb:   orderServiceDb,
-		CatalogServiceDb: catalogServiceDb,
-	}
+	return db
 }
 
 func GetUserByUsername(db *gorm.DB, username string) (*model.User, error) {

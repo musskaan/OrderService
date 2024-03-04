@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -28,15 +29,8 @@ type UserServiceServer struct {
 }
 
 type OrderServiceServer struct {
-	OrderServiceDB   *gorm.DB
-	CatalogServiceDB *gorm.DB
+	DB *gorm.DB
 	o.OrderServiceServer
-}
-
-type MenuItem struct {
-	ID    int64   `json:"id"`
-	Name  string  `json:"name"`
-	Price float64 `json:"price"`
 }
 
 func main() {
@@ -53,7 +47,7 @@ func createOrderServer() {
 	oServer := grpc.NewServer()
 	db := database.Connection()
 
-	o.RegisterOrderServiceServer(oServer, &OrderServiceServer{OrderServiceDB: db.OrderServiceDb, CatalogServiceDB: db.CatalogServiceDb})
+	o.RegisterOrderServiceServer(oServer, &OrderServiceServer{DB: db})
 	err = oServer.Serve(lis2)
 	if err != nil {
 		log.Fatalf("Failed to serve 8002: %v", err)
@@ -69,7 +63,7 @@ func createUserServer() {
 	uServer := grpc.NewServer()
 	db := database.Connection()
 
-	u.RegisterUserServiceServer(uServer, &UserServiceServer{DB: db.OrderServiceDb})
+	u.RegisterUserServiceServer(uServer, &UserServiceServer{DB: db})
 	err = uServer.Serve(lis1)
 	if err != nil {
 		log.Fatalf("Failed to serve 8001: %v", err)
@@ -132,7 +126,7 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		return nil, status.Errorf(codes.Unauthenticated, "Credentials not found")
 	}
 
-	user, err := database.GetUserByUsername(orderServer.OrderServiceDB, username)
+	user, err := database.GetUserByUsername(orderServer.DB, username)
 
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, err.Error())
@@ -148,7 +142,7 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		return nil, status.Errorf(codes.InvalidArgument, "Unauthorized: Invalid username or password")
 	}
 
-	totalPrice, err := calculateOrderTotal(orderServer, req)
+	totalPrice, err := calculateOrderTotal(req)
 	itemsByte, err := json.Marshal(req.MenuItems)
 	itemStr := string(itemsByte)
 
@@ -159,7 +153,7 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		TotalPrice:   totalPrice,
 	}
 
-	err = orderServer.OrderServiceDB.Create(&order).Error
+	err = orderServer.DB.Create(&order).Error
 
 	if err != nil {
 		errorString := fmt.Sprintf("error storing the order: %v", err)
@@ -215,48 +209,36 @@ func extractCredentials(ctx context.Context) (string, string, bool) {
 	return credentials[0], credentials[1], true
 }
 
-func calculateOrderTotal(orderServer *OrderServiceServer, req *o.CreateOrderRequest) (float64, error) {
+func calculateOrderTotal(req *o.CreateOrderRequest) (float64, error) {
 	restaurantID := req.RestaurantId
 	total := 0.0
 
-	for menuItem, quantity := range req.MenuItems {
-		var item MenuItem
+	for menuItemName, quantity := range req.MenuItems {
+		apiString := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v/menuItems/%v", restaurantID, menuItemName)
+		resp, err := http.Get(apiString)
 
-		err := orderServer.CatalogServiceDB.Where("name = ? AND restaurant_id = ?", menuItem, restaurantID).First(&item).Error
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return 0.0, fmt.Errorf("menu item: %s not found for restaurant: (restaurant ID: %d)", menuItem, restaurantID)
-			}
 			return 0.0, err
 		}
 
-		// return item.Price, nil
+		bodyBytes, _ := ioutil.ReadAll(resp.Body)
 
-		// apiString := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v/menuItems/%v", rId, menuItem)
-		// resp, err := http.Get(apiString)
+		body := string(bodyBytes)
 
-		// if err != nil {
-		// 	return 0.0, err
-		// }
+		var response struct {
+			Data struct {
+				MenuItem struct {
+					Price float64 `json:"price"`
+				} `json:"menu_item"`
+			} `json:"data"`
+		}
 
-		// bodyBytes, _ := ioutil.ReadAll(resp.Body)
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			return 0.0, err
+		}
 
-		// body := string(bodyBytes)
-
-		// var response struct {
-		// 	Data struct {
-		// 		MenuItems struct {
-		// 			TotalPrice float64 `json:"total_price"`
-		// 		} `json:"menu_items"`
-		// 	} `json:"data"`
-		// }
-
-		// if err := json.Unmarshal([]byte(body), &response); err != nil {
-		// 	return 0.0, err
-		// }
-
-		// price := response.Data.MenuItems.TotalPrice
-		total += item.Price * float64(quantity)
+		price := response.Data.MenuItem.Price
+		total += price * float64(quantity)
 	}
 
 	return total, nil
