@@ -9,10 +9,10 @@ service UserService {
 }
 
 message Address {
-  string street = 2;
-  string city = 4;
-  string state = 5;
-  string zipcode = 6;
+  string street = 1;
+  string city = 2;
+  string state = 3;
+  string zipcode = 4;
 }
 
 message RegisterUserRequest {

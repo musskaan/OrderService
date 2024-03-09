@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -121,13 +124,11 @@ func HashPassword(password string) (string, error) {
 
 func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.CreateOrderRequest) (*o.CreateOrderResponse, error) {
 	username, password, ok := extractCredentials(ctx)
-
 	if !ok {
 		return nil, status.Errorf(codes.Unauthenticated, "Credentials not found")
 	}
 
 	user, err := database.GetUserByUsername(orderServer.DB, username)
-
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, err.Error())
 	}
@@ -143,7 +144,15 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 	}
 
 	totalPrice, err := calculateOrderTotal(req)
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, err.Error())
+	}
+
 	itemsByte, err := json.Marshal(req.MenuItems)
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, err.Error())
+	}
+
 	itemStr := string(itemsByte)
 
 	order := &model.Order{
@@ -154,10 +163,38 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 	}
 
 	err = orderServer.DB.Create(&order).Error
-
 	if err != nil {
 		errorString := fmt.Sprintf("error storing the order: %v", err)
 		return nil, status.Errorf(codes.Unknown, errorString)
+	}
+
+	restaurantAddress, err := fetchRestaurantAddress(req.RestaurantId)
+	if err != nil {
+		return nil, status.Errorf(codes.Canceled, err.Error())
+	}
+
+	requestBody, _ := json.Marshal(map[string]any{
+		"orderId":       order.Id,
+		"dropAddress":   user.Address,
+		"pickupAddress": restaurantAddress,
+	})
+
+	log.Println("requestBody", requestBody)
+
+	reqBody := bytes.NewBuffer(requestBody)
+
+	resp, err := http.Post("http://localhost:9090/api/v1/deliveries", "application/json", reqBody)
+
+	switch resp.StatusCode {
+	case http.StatusConflict:
+		return nil, status.Errorf(codes.Aborted, "OrderAlreadyAssignedException: %s", parseResponse(resp.Body))
+	case http.StatusNotFound:
+		return nil, status.Errorf(codes.NotFound, "NoDeliveryExecutiveNearbyException: %s", parseResponse(resp.Body))
+	case http.StatusInternalServerError:
+		log.Println("inside")
+		return nil, status.Errorf(codes.Internal, "Internal Server Error: %s", parseResponse(resp.Body))
+	default:
+		break
 	}
 
 	response := &o.CreateOrderResponse{
@@ -169,6 +206,44 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 	}
 
 	return response, nil
+}
+
+func parseResponse(body io.Reader) string {
+	responseBytes, err := ioutil.ReadAll(body)
+	if err != nil {
+		return fmt.Sprintf("Error reading response body: %s", err.Error())
+	}
+	return string(responseBytes)
+}
+
+func fetchRestaurantAddress(r string) (*model.Address, error) {
+	apiStr := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v", r)
+	resp, _ := http.Get(apiStr)
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return nil, status.Errorf(codes.NotFound, "NoSuchElementException: %s", parseResponse(resp.Body))
+	case http.StatusInternalServerError:
+		return nil, status.Errorf(codes.Internal, "Internal Server Error: %s", parseResponse(resp.Body))
+	default:
+		break
+	}
+
+	body := parseResponse(resp.Body)
+
+	var response struct {
+		Data struct {
+			Restaurant struct {
+				Address *model.Address `json:"address"`
+			} `json:"restaurant"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		return nil, err
+	}
+
+	return response.Data.Restaurant.Address, nil
 }
 
 func isAuthenticated(storedHashPassword, password string) (bool, error) {
@@ -215,15 +290,13 @@ func calculateOrderTotal(req *o.CreateOrderRequest) (float64, error) {
 
 	for menuItemName, quantity := range req.MenuItems {
 		apiString := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v/menuItems/%v", restaurantID, menuItemName)
-		resp, err := http.Get(apiString)
+		resp, _ := http.Get(apiString)
 
-		if err != nil {
-			return 0.0, err
+		if resp.StatusCode != http.StatusOK {
+			return 0.0, errors.New("item not found")
 		}
 
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-
-		body := string(bodyBytes)
+		body := parseResponse(resp.Body)
 
 		var response struct {
 			Data struct {

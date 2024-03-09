@@ -1,10 +1,10 @@
 package model
 
 type Address struct {
-	Street  string
-	City    string
-	State   string
-	Zipcode string
+	Street  string `json:"street"`
+	City    string `json:"city"`
+	State   string `json:"state"`
+	Zipcode string `json:"zipcode"`
 }
 
 type User struct {
