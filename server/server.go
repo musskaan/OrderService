@@ -32,7 +32,9 @@ type UserServiceServer struct {
 }
 
 type OrderServiceServer struct {
-	DB *gorm.DB
+	DB                    *gorm.DB
+	CatalogServiceAPI     string
+	FulfillmentServiceAPI string
 	o.OrderServiceServer
 }
 
@@ -47,10 +49,13 @@ func createOrderServer() {
 		log.Fatalf("Failed to listen: 8002, %v", err)
 	}
 
+	catalogServiceAPIUrl := "http://localhost:8080/api/v1/restaurants/"
+	fulfillmentServiceAPIUrl := "http://localhost:9090/api/v1/deliveries"
+
 	oServer := grpc.NewServer()
 	db := database.Connection()
 
-	o.RegisterOrderServiceServer(oServer, &OrderServiceServer{DB: db})
+	o.RegisterOrderServiceServer(oServer, &OrderServiceServer{DB: db, CatalogServiceAPI: catalogServiceAPIUrl, FulfillmentServiceAPI: fulfillmentServiceAPIUrl})
 	err = oServer.Serve(lis2)
 	if err != nil {
 		log.Fatalf("Failed to serve 8002: %v", err)
@@ -143,7 +148,7 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		return nil, status.Errorf(codes.InvalidArgument, "Unauthorized: Invalid username or password")
 	}
 
-	totalPrice, err := calculateOrderTotal(req)
+	totalPrice, err := calculateOrderTotal(req, orderServer.CatalogServiceAPI)
 	if err != nil {
 		return nil, status.Errorf(codes.Unknown, err.Error())
 	}
@@ -168,7 +173,7 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		return nil, status.Errorf(codes.Unknown, errorString)
 	}
 
-	restaurantAddress, err := fetchRestaurantAddress(req.RestaurantId)
+	restaurantAddress, err := fetchRestaurantAddress(req.RestaurantId, orderServer.CatalogServiceAPI)
 	if err != nil {
 		return nil, status.Errorf(codes.Canceled, err.Error())
 	}
@@ -179,11 +184,9 @@ func (orderServer *OrderServiceServer) Create(ctx context.Context, req *o.Create
 		"pickupAddress": restaurantAddress,
 	})
 
-	log.Println("requestBody", requestBody)
-
 	reqBody := bytes.NewBuffer(requestBody)
 
-	resp, err := http.Post("http://localhost:9090/api/v1/deliveries", "application/json", reqBody)
+	resp, err := http.Post(orderServer.FulfillmentServiceAPI, "application/json", reqBody)
 
 	switch resp.StatusCode {
 	case http.StatusConflict:
@@ -216,8 +219,9 @@ func parseResponse(body io.Reader) string {
 	return string(responseBytes)
 }
 
-func fetchRestaurantAddress(r string) (*model.Address, error) {
-	apiStr := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v", r)
+func fetchRestaurantAddress(restaurantId string, url string) (*model.Address, error) {
+	// apiStr := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v", r)
+	apiStr := fmt.Sprintf(url + restaurantId)
 	resp, _ := http.Get(apiStr)
 
 	switch resp.StatusCode {
@@ -284,12 +288,13 @@ func extractCredentials(ctx context.Context) (string, string, bool) {
 	return credentials[0], credentials[1], true
 }
 
-func calculateOrderTotal(req *o.CreateOrderRequest) (float64, error) {
+func calculateOrderTotal(req *o.CreateOrderRequest, url string) (float64, error) {
 	restaurantID := req.RestaurantId
 	total := 0.0
 
 	for menuItemName, quantity := range req.MenuItems {
-		apiString := fmt.Sprintf("http://localhost:8080/api/v1/restaurants/%v/menuItems/%v", restaurantID, menuItemName)
+		apiString := fmt.Sprintf(url + restaurantID + "/menuItems/" + menuItemName)
+
 		resp, _ := http.Get(apiString)
 
 		if resp.StatusCode != http.StatusOK {
